@@ -121,11 +121,21 @@ def create_keystore(privkey_bytes: bytes, password: str, path: str) -> None:
         json.dump(keystore, f)
 
 
-def generate_deposit(pubkey_hex: str, withdrawal: str, amount: int, keystore_path: str, password: str) -> dict:
-    pubkey = dep.hex_to_bytes(pubkey_hex, 48, 'pubkey')
-    withdrawal_credentials = dep.make_withdrawal_credentials(withdrawal)
+def generate_deposit(pubkey_hex: Optional[str], withdrawal: str, amount: int, keystore_path: str, password: str) -> dict:
+    """Generate deposit data from a keystore.
+
+    If ``pubkey_hex`` is ``None`` the validator public key is derived from the
+    decrypted private key.
+    """
     privkey_bytes = dep.decrypt_keystore(keystore_path, password)
     privkey = int.from_bytes(privkey_bytes, 'big')
+
+    if pubkey_hex:
+        pubkey = dep.hex_to_bytes(pubkey_hex, 48, 'pubkey')
+    else:
+        pubkey = bls.SkToPk(privkey)
+
+    withdrawal_credentials = dep.make_withdrawal_credentials(withdrawal)
     msg_root = dep.compute_deposit_message_root(pubkey, withdrawal_credentials, amount)
     signing_root = dep.sha256(msg_root + dep.compute_deposit_domain())
     signature = bls.Sign(privkey, signing_root)
@@ -234,18 +244,24 @@ class DepositResponse(BaseModel):
 
 @app.post('/generate_deposit')
 async def api_generate_deposit(
-    pubkey: str = Form(...),
+    pubkey: Optional[str] = Form(None),
     withdrawal: str = Form(...),
     amount: int = Form(...),
-    keystore: UploadFile = Form(...),
+    keystore: Optional[UploadFile] = Form(None),
     password: str = Form(...),
+    keystore_path: Optional[str] = Form(None),
 ):
-    """Generate deposit JSON from uploaded keystore."""
-    path = f"/tmp/{keystore.filename}"
-    with open(path, 'wb') as f:
-        f.write(await keystore.read())
-    data = generate_deposit(pubkey, withdrawal, amount, path, password)
-    os.remove(path)
+    """Generate deposit JSON from uploaded keystore or server path."""
+    if keystore is not None:
+        path = f"/tmp/{keystore.filename}"
+        with open(path, 'wb') as f:
+            f.write(await keystore.read())
+        data = generate_deposit(pubkey, withdrawal, amount, path, password)
+        os.remove(path)
+    elif keystore_path:
+        data = generate_deposit(pubkey, withdrawal, amount, keystore_path, password)
+    else:
+        raise HTTPException(status_code=400, detail='Keystore file or path required')
     return data
 
 
@@ -334,7 +350,26 @@ async def api_generate_keystore(req: KeystoreRequest):
     cmd += ['--output_dir', req.output_dir]
     try:
         subprocess.run(cmd, check=True)
-        return {'output_dir': req.output_dir}
+        # attempt to locate keystore and deposit data
+        keystore_file = None
+        pubkey = None
+        for root_dir, _, files in os.walk(req.output_dir):
+            for f in files:
+                if f.endswith('.json') and 'keystore' in f.lower():
+                    keystore_file = os.path.join(root_dir, f)
+                if f.startswith('deposit_data') and f.endswith('.json'):
+                    with open(os.path.join(root_dir, f), 'r') as df:
+                        try:
+                            dep_json = json.load(df)
+                            pubkey = dep_json.get('pubkey') or dep_json.get('pubkey_hex')
+                        except Exception:
+                            pass
+        resp = {'output_dir': req.output_dir}
+        if keystore_file:
+            resp['keystore'] = keystore_file
+        if pubkey:
+            resp['pubkey'] = pubkey
+        return resp
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=str(e))
 

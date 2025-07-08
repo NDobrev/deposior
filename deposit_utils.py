@@ -26,21 +26,29 @@ DEPOSIT_ABI = [
 
 
 def generate_deposit(
-    pubkey_hex: str,
+    pubkey_hex: Optional[str],
     eth1_address: str,
     amount_gwei: int,
     keystore_path: str,
     password: str,
     output_file: Optional[str] = None,
 ) -> dict:
-    """Create deposit JSON data from validator pubkey/keystore."""
-    pubkey = dep.hex_to_bytes(pubkey_hex, expected_len=48, field_name="pubkey")
-    withdrawal_credentials = dep.make_withdrawal_credentials(eth1_address)
+    """Create deposit JSON data from validator pubkey/keystore.
 
+    If ``pubkey_hex`` is ``None`` the public key will be derived from the
+    keystore's private key.
+    """
     privkey_bytes = dep.decrypt_keystore(keystore_path, password)
     if len(privkey_bytes) != 32:
         raise ValueError("Decrypted private key must be exactly 32 bytes")
     privkey = int.from_bytes(privkey_bytes, "big")
+
+    if pubkey_hex:
+        pubkey = dep.hex_to_bytes(pubkey_hex, expected_len=48, field_name="pubkey")
+    else:
+        pubkey = bls.SkToPk(privkey)
+
+    withdrawal_credentials = dep.make_withdrawal_credentials(eth1_address)
 
     deposit_message_root = dep.compute_deposit_message_root(
         pubkey, withdrawal_credentials, amount_gwei
