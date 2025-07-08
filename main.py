@@ -464,7 +464,6 @@ async def api_list_keystores(path: str):
 class KeystoreDepositRequest(BaseModel):
     address: str
     keystore_path: str
-    password: str = 'password'
     amount: int = 32000000000
 
 
@@ -482,7 +481,10 @@ async def api_deposit_keystore(req: KeystoreDepositRequest):
         return {'tx_hash': used[req.keystore_path], 'already_used': True}
 
     try:
-        deposit = generate_deposit(None, wallet['address'], req.amount, req.keystore_path, req.password)
+        pwd_path = os.path.join(os.path.dirname(req.keystore_path), 'secrets', req.address)
+        with open(pwd_path, 'r') as pf:
+            password = pf.read().strip()
+        deposit = generate_deposit(None, wallet['address'], req.amount, req.keystore_path, password)
         tx_hash = send_deposit(wallet['privateKey'], deposit)
         used[req.keystore_path] = tx_hash
         db['used_keystores'] = used
