@@ -3,12 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <title>Hoodi Depositor</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css">
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
+        body { margin: 40px; }
         section { margin-bottom: 2em; }
-        label { display: block; margin-top: 0.5em; }
-        input, select { width: 100%; padding: 0.4em; }
-        button { margin-top: 1em; padding: 0.5em 1em; }
         pre { background: #f0f0f0; padding: 1em; overflow-x: auto; }
     </style>
 </head>
@@ -16,53 +14,73 @@
 <h1>Hoodi Depositor</h1>
 <section>
     <h2>Wallets</h2>
-    <select id="wallet-select"></select>
-    <button onclick="refreshWallets()">Refresh Wallets</button>
+    <table class="table" id="wallet-table">
+        <thead><tr><th>Address</th><th>Balance (ETH)</th><th></th></tr></thead>
+        <tbody></tbody>
+    </table>
+    <select id="wallet-select" class="form-select d-none"></select>
+    <button class="btn btn-secondary" onclick="refreshWallets()">Refresh Wallets</button>
 </section>
 
 <section>
     <h2>Generate Keystore</h2>
-    <label>Index <input id="ks-index" type="number" value="0"></label>
-    <label>Num Validators <input id="ks-num" type="number" value="1"></label>
-    <label>Mnemonic (optional) <input id="ks-mnemonic" type="text"></label>
-    <label>Chain <input id="ks-chain" type="text" value="hoodi"></label>
-    <label>Output Directory <input id="ks-dir" type="text" value="validator_keys"></label>
-    <button onclick="generateKeystore()">Generate</button>
+    <label class="form-label">Index <input class="form-control" id="ks-index" type="number" value="0"></label>
+    <label class="form-label">Num Validators <input class="form-control" id="ks-num" type="number" value="1"></label>
+    <label class="form-label">Mnemonic (optional) <input class="form-control" id="ks-mnemonic" type="text"></label>
+    <label class="form-label">Chain <input class="form-control" id="ks-chain" type="text" value="hoodi"></label>
+    <label class="form-label">Output Directory <input class="form-control" id="ks-dir" type="text" value="validator_keys"></label>
+    <button class="btn btn-primary" onclick="generateKeystore()">Generate</button>
     <pre id="ks-output"></pre>
 </section>
 
 <section>
     <h2>Generate Deposit Data</h2>
-    <label>Validator Pubkey <input id="pubkey" type="text"></label>
-    <label>Withdrawal Address <input id="withdrawal" type="text"></label>
-    <label>Amount (gwei) <input id="amount" type="number" value="32000000000"></label>
-    <label>Keystore File <input id="keystore" type="file"></label>
-    <label>Password <input id="password" type="password"></label>
-    <button onclick="generateDeposit()">Generate</button>
+    <label class="form-label">Validator Pubkey <input class="form-control" id="pubkey" type="text"></label>
+    <label class="form-label">Withdrawal Address <input class="form-control" id="withdrawal" type="text"></label>
+    <label class="form-label">Amount (gwei) <input class="form-control" id="amount" type="number" value="32000000000"></label>
+    <label class="form-label">Keystore File <input class="form-control" id="keystore" type="file"></label>
+    <label class="form-label">Password <input class="form-control" id="password" type="password"></label>
+    <button class="btn btn-primary" onclick="generateDeposit()">Generate</button>
     <pre id="deposit-output"></pre>
 </section>
 
 <section>
     <h2>Send Deposit</h2>
-    <button onclick="sendDeposit()">Send Deposit Transaction</button>
+    <button class="btn btn-success" onclick="sendDeposit()">Send Deposit Transaction</button>
     <pre id="tx-output"></pre>
 </section>
 
 <script>
+function log(msg) {
+    const pre = document.getElementById('tx-output');
+    pre.textContent += msg + "\n";
+}
 async function refreshWallets() {
     const res = await fetch('/wallets');
     const wallets = await res.json();
     const sel = document.getElementById('wallet-select');
+    const tbody = document.querySelector('#wallet-table tbody');
     sel.innerHTML = '';
+    tbody.innerHTML = '';
     wallets.forEach(w => {
         const opt = document.createElement('option');
         opt.value = w.address;
         opt.textContent = w.address;
         sel.appendChild(opt);
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${w.address}</td><td>${w.balance}</td><td><button class="btn btn-sm btn-outline-primary" onclick="selectWallet('${w.address}')">Use</button> <button class="btn btn-sm btn-success ms-1" onclick="autoDeposit('${w.address}')">Deposit</button></td>`;
+        tbody.appendChild(tr);
     });
 }
 
+function selectWallet(addr) {
+    document.getElementById('wallet-select').value = addr;
+    document.getElementById('withdrawal').value = addr;
+}
+
 async function generateDeposit() {
+    log('Generating deposit data...');
     const pubkey = document.getElementById('pubkey').value;
     const withdrawal = document.getElementById('withdrawal').value;
     const amount = document.getElementById('amount').value;
@@ -79,21 +97,46 @@ async function generateDeposit() {
     const data = await res.json();
     document.getElementById('deposit-output').textContent = JSON.stringify(data, null, 2);
     window.currentDeposit = data;
+    log('Deposit data generated');
 }
 
 async function sendDeposit() {
     if (!window.currentDeposit) { alert('Generate deposit first'); return; }
     const address = document.getElementById('wallet-select').value;
+    log('Sending transaction...');
     const res = await fetch('/send_deposit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: address, deposit: window.currentDeposit })
     });
     const data = await res.json();
-    document.getElementById('tx-output').textContent = JSON.stringify(data, null, 2);
+    document.getElementById('tx-output').textContent += JSON.stringify(data, null, 2) + '\n';
+    log('Transaction sent');
+}
+
+async function autoDeposit(addr) {
+    log('Starting full deposit for ' + addr + '...');
+    const res = await fetch('/auto_deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr })
+    });
+    const data = await res.json();
+    if (data.logs) {
+        data.logs.forEach(m => log(m));
+    }
+    if (data.deposit) {
+        document.getElementById('deposit-output').textContent = JSON.stringify(data.deposit, null, 2);
+    }
+    if (data.error) {
+        log('Error: ' + data.error);
+    } else {
+        log('Auto deposit finished');
+    }
 }
 
 async function generateKeystore() {
+    log('Generating keystore...');
     const payload = {
         index: parseInt(document.getElementById('ks-index').value),
         num_validators: parseInt(document.getElementById('ks-num').value),
@@ -108,6 +151,7 @@ async function generateKeystore() {
     });
     const data = await res.json();
     document.getElementById('ks-output').textContent = JSON.stringify(data, null, 2);
+    log('Keystore generation finished');
 }
 
 refreshWallets();
