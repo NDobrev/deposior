@@ -21,6 +21,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
+from mnemonic import Mnemonic
+from eth2deposit.key_handling.key_derivation.path import mnemonic_and_path_to_key
 from web3 import Web3
 from eth_account import Account
 from py_ecc.bls import G2ProofOfPossession as bls
@@ -332,46 +334,32 @@ class KeystoreRequest(BaseModel):
 
 @app.post('/generate_keystore')
 async def api_generate_keystore(req: KeystoreRequest):
-    cmd = ['nimbus_cli']
-    if req.mnemonic:
-        cmd += [
-            'existing-mnemonic',
-            '--validator_start_index', str(req.index),
-            '--num_validators', str(req.num_validators),
-            '--chain', req.chain,
-        ]
-    else:
-        cmd += [
-            'new-mnemonic',
-            '--validator_start_index', str(req.index),
-            '--num_validators', str(req.num_validators),
-            '--chain', req.chain,
-        ]
-    cmd += ['--output_dir', req.output_dir]
-    try:
-        subprocess.run(cmd, check=True)
-        # attempt to locate keystore and deposit data
-        keystore_file = None
-        pubkey = None
-        for root_dir, _, files in os.walk(req.output_dir):
-            for f in files:
-                if f.endswith('.json') and 'keystore' in f.lower():
-                    keystore_file = os.path.join(root_dir, f)
-                if f.startswith('deposit_data') and f.endswith('.json'):
-                    with open(os.path.join(root_dir, f), 'r') as df:
-                        try:
-                            dep_json = json.load(df)
-                            pubkey = dep_json.get('pubkey') or dep_json.get('pubkey_hex')
-                        except Exception:
-                            pass
-        resp = {'output_dir': req.output_dir}
-        if keystore_file:
-            resp['keystore'] = keystore_file
-        if pubkey:
-            resp['pubkey'] = pubkey
-        return resp
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    os.makedirs(req.output_dir, exist_ok=True)
+    mnemo = Mnemonic('english')
+    mnemonic = req.mnemonic.strip() if req.mnemonic else ''
+    if not mnemonic:
+        mnemonic = mnemo.generate(256)
+    keystore_file = None
+    pubkey = None
+    for i in range(req.num_validators):
+        idx = req.index + i
+        path = f"m/12381/3600/{idx}/0/0"
+        sk = mnemonic_and_path_to_key(mnemonic=mnemonic, path=path, password='')
+        sk_bytes = sk.to_bytes(32, 'big')
+        pk_hex = bls.SkToPk(sk).hex()
+        dir_path = os.path.join(req.output_dir, f"validator_{idx}")
+        os.makedirs(dir_path, exist_ok=True)
+        ks_path = os.path.join(dir_path, 'keystore.json')
+        create_keystore(sk_bytes, 'password', ks_path)
+        if keystore_file is None:
+            keystore_file = ks_path
+            pubkey = pk_hex
+    resp = {'output_dir': req.output_dir, 'mnemonic': mnemonic}
+    if keystore_file:
+        resp['keystore'] = keystore_file
+    if pubkey:
+        resp['pubkey'] = pubkey
+    return resp
 
 # --- CLI ---
 @click.group()

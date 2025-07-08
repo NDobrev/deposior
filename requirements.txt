@@ -5,3 +5,5 @@ eth-account==0.5.9
 py-ecc==4.0.0
 click==7.0
 pycryptodome==3.9.7
+mnemonic==0.21
+eth2deposit==0.2.2
