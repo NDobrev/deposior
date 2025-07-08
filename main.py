@@ -24,7 +24,10 @@ from typing import Optional
 from web3 import Web3
 from eth_account import Account
 from py_ecc.bls import G2ProofOfPossession as bls
-import deposit_utils
+import deposit as dep
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
+import hashlib
 
 # Configuration
 CHAIN_NAME = 'hoodi'
@@ -88,6 +91,89 @@ def generate_wallet_with_mnemonic():
     }
 
 
+# --- Deposit helpers (using deposit.py) ---
+def create_keystore(privkey_bytes: bytes, password: str, path: str) -> None:
+    """Create a minimal EIP-2335 keystore file at path."""
+    salt = secrets.token_bytes(16)
+    c = 262144
+    dklen = 32
+    derived_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, c, dklen)
+    iv = secrets.token_bytes(16)
+    ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
+    aes = AES.new(derived_key[:16], AES.MODE_CTR, counter=ctr)
+    ciphertext = aes.encrypt(privkey_bytes)
+    mac = hashlib.sha256(derived_key[16:32] + ciphertext).digest()
+    keystore = {
+        'crypto': {
+            'kdf': {
+                'function': 'pbkdf2',
+                'params': {'dklen': dklen, 'salt': salt.hex(), 'c': c},
+            },
+            'checksum': {'function': 'sha256', 'params': {}, 'message': mac.hex()},
+            'cipher': {
+                'function': 'aes-128-ctr',
+                'params': {'iv': iv.hex()},
+                'message': ciphertext.hex(),
+            },
+        }
+    }
+    with open(path, 'w') as f:
+        json.dump(keystore, f)
+
+
+def generate_deposit(pubkey_hex: str, withdrawal: str, amount: int, keystore_path: str, password: str) -> dict:
+    pubkey = dep.hex_to_bytes(pubkey_hex, 48, 'pubkey')
+    withdrawal_credentials = dep.make_withdrawal_credentials(withdrawal)
+    privkey_bytes = dep.decrypt_keystore(keystore_path, password)
+    privkey = int.from_bytes(privkey_bytes, 'big')
+    msg_root = dep.compute_deposit_message_root(pubkey, withdrawal_credentials, amount)
+    signing_root = dep.sha256(msg_root + dep.compute_deposit_domain())
+    signature = bls.Sign(privkey, signing_root)
+    data_root = dep.compute_deposit_data_root(pubkey, withdrawal_credentials, amount, signature)
+    return {
+        'pubkey': f'0x{pubkey.hex()}',
+        'withdrawal_credentials': f'0x{withdrawal_credentials.hex()}',
+        'amount': amount,
+        'signature': f'0x{signature.hex()}',
+        'deposit_message_root': f'0x{msg_root.hex()}',
+        'deposit_data_root': f'0x{data_root.hex()}',
+    }
+
+
+def _parse_deposit(deposit: dict) -> dict:
+    return {
+        'pubkey': dep.hex_to_bytes(deposit['pubkey'], 48, 'pubkey'),
+        'withdrawal_credentials': dep.hex_to_bytes(deposit['withdrawal_credentials'], 32, 'withdrawal_credentials'),
+        'amount': int(deposit['amount']),
+        'signature': dep.hex_to_bytes(deposit['signature'], 96, 'signature'),
+        'deposit_data_root': dep.hex_to_bytes(deposit['deposit_data_root'], 32, 'deposit_data_root'),
+    }
+
+
+def send_deposit(privkey: str, deposit: dict, eth_rpc_url: str = RPC_URL) -> str:
+    w3_local = Web3(Web3.HTTPProvider(eth_rpc_url))
+    if not w3_local.is_connected():
+        raise RuntimeError(f'Cannot connect to Ethereum node: {eth_rpc_url}')
+    account = Account.from_key(privkey)
+    d = _parse_deposit(deposit)
+    contract = w3_local.eth.contract(address=DEPOSIT_CONTRACT_ADDRESS, abi=DEPOSIT_CONTRACT_ABI)
+    nonce = w3_local.eth.get_transaction_count(account.address)
+    value = d['amount'] * 10**9
+    txn = contract.functions.deposit(
+        d['pubkey'], d['withdrawal_credentials'], d['signature'], d['deposit_data_root']
+    ).build_transaction({
+        'from': account.address,
+        'value': value,
+        'nonce': nonce,
+        'gasPrice': w3_local.eth.gas_price,
+        'chainId': w3_local.eth.chain_id,
+    })
+    txn['gas'] = w3_local.eth.estimate_gas(txn)
+    signed = account.sign_transaction(txn)
+    tx_hash = w3_local.eth.send_raw_transaction(signed.rawTransaction)
+    return tx_hash.hex()
+
+
 def generate_validator_keys():
     sk = secrets.randbelow(bls.curve_order)
     pk = bls.SkToPk(sk)
@@ -116,7 +202,15 @@ async def api_create_wallet():
 @app.get('/wallets')
 async def api_list_wallets():
     wallets = load_wallets()
-    return [{'address': w['address']} for w in wallets]
+    result = []
+    for w in wallets:
+        try:
+            bal = w3.eth.get_balance(w['address'])
+            bal_eth = w3.from_wei(bal, 'ether')
+            result.append({'address': w['address'], 'balance': str(bal_eth)})
+        except Exception:
+            result.append({'address': w['address'], 'balance': 'error'})
+    return result
 
 @app.get('/balance/{address}')
 async def api_balance(address: str):
@@ -150,7 +244,7 @@ async def api_generate_deposit(
     path = f"/tmp/{keystore.filename}"
     with open(path, 'wb') as f:
         f.write(await keystore.read())
-    data = deposit_utils.generate_deposit(pubkey, withdrawal, amount, path, password)
+    data = generate_deposit(pubkey, withdrawal, amount, path, password)
     os.remove(path)
     return data
 
@@ -167,10 +261,49 @@ async def api_send_deposit(req: SendDepositRequest):
     if wallet is None:
         raise HTTPException(status_code=404, detail='Wallet not found')
     try:
-        tx_hash = deposit_utils.send_deposit(wallet['privateKey'], req.deposit)
+        tx_hash = send_deposit(wallet['privateKey'], req.deposit)
         return DepositResponse(tx_hash=tx_hash)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AutoDepositRequest(BaseModel):
+    address: str
+    password: str = 'password'
+    amount: int = 32000000000
+
+
+@app.post('/auto_deposit')
+async def api_auto_deposit(req: AutoDepositRequest):
+    """Run full deposit workflow for a wallet and return log messages."""
+    wallets = load_wallets()
+    wallet = next((w for w in wallets if Web3.to_checksum_address(w['address']) == Web3.to_checksum_address(req.address)), None)
+    if wallet is None:
+        raise HTTPException(status_code=404, detail='Wallet not found')
+
+    logs = []
+    try:
+        logs.append('Generating validator keys')
+        keys = generate_validator_keys()
+        priv_bytes = int(keys['validatorPrivateKey'], 16).to_bytes(32, 'big')
+        ks_path = f"/tmp/{keys['validatorPublicKey']}.json"
+        create_keystore(priv_bytes, req.password, ks_path)
+        logs.append(f'Keystore created: {ks_path}')
+        deposit = generate_deposit(keys['validatorPublicKey'], wallet['address'], req.amount, ks_path, req.password)
+        logs.append('Deposit data generated')
+        tx_hash = send_deposit(wallet['privateKey'], deposit)
+        logs.append(f'Transaction sent: {tx_hash}')
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        logs.append(f'Confirmed in block {receipt.blockNumber}')
+        try:
+            os.remove(ks_path)
+        except FileNotFoundError:
+            pass
+        receipt_json = json.loads(Web3.to_json(receipt))
+        return {'logs': logs, 'deposit': deposit, 'tx_hash': tx_hash, 'receipt': receipt_json}
+    except Exception as e:
+        logs.append(f'Error: {e}')
+        return {'logs': logs, 'error': str(e)}
 
 
 class KeystoreRequest(BaseModel):
