@@ -16,10 +16,15 @@ import json
 import secrets
 import subprocess
 import click
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, Form
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional
 from web3 import Web3
 from eth_account import Account
 from py_ecc.bls import G2ProofOfPossession as bls
+import deposit_utils
 
 # Configuration
 CHAIN_NAME = 'hoodi'
@@ -93,6 +98,12 @@ def generate_validator_keys():
 
 # --- REST API ---
 app = FastAPI(title="Hoodi Tools API")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+async def ui_index():
+    return FileResponse("static/index.html")
 
 @app.get('/wallet')
 async def api_create_wallet():
@@ -121,6 +132,78 @@ async def api_balance(address: str):
 @app.get('/validator')
 async def api_validator():
     return generate_validator_keys()
+
+
+class DepositResponse(BaseModel):
+    tx_hash: str
+
+
+@app.post('/generate_deposit')
+async def api_generate_deposit(
+    pubkey: str = Form(...),
+    withdrawal: str = Form(...),
+    amount: int = Form(...),
+    keystore: UploadFile = Form(...),
+    password: str = Form(...),
+):
+    """Generate deposit JSON from uploaded keystore."""
+    path = f"/tmp/{keystore.filename}"
+    with open(path, 'wb') as f:
+        f.write(await keystore.read())
+    data = deposit_utils.generate_deposit(pubkey, withdrawal, amount, path, password)
+    os.remove(path)
+    return data
+
+
+class SendDepositRequest(BaseModel):
+    address: str
+    deposit: dict
+
+
+@app.post('/send_deposit')
+async def api_send_deposit(req: SendDepositRequest):
+    wallets = load_wallets()
+    wallet = next((w for w in wallets if Web3.to_checksum_address(w['address']) == Web3.to_checksum_address(req.address)), None)
+    if wallet is None:
+        raise HTTPException(status_code=404, detail='Wallet not found')
+    try:
+        tx_hash = deposit_utils.send_deposit(wallet['privateKey'], req.deposit)
+        return DepositResponse(tx_hash=tx_hash)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class KeystoreRequest(BaseModel):
+    index: int = 0
+    num_validators: int = 1
+    mnemonic: Optional[str] = None
+    chain: str = 'hoodi'
+    output_dir: str = 'validator_keys'
+
+
+@app.post('/generate_keystore')
+async def api_generate_keystore(req: KeystoreRequest):
+    cmd = ['nimbus_cli']
+    if req.mnemonic:
+        cmd += [
+            'existing-mnemonic',
+            '--validator_start_index', str(req.index),
+            '--num_validators', str(req.num_validators),
+            '--chain', req.chain,
+        ]
+    else:
+        cmd += [
+            'new-mnemonic',
+            '--validator_start_index', str(req.index),
+            '--num_validators', str(req.num_validators),
+            '--chain', req.chain,
+        ]
+    cmd += ['--output_dir', req.output_dir]
+    try:
+        subprocess.run(cmd, check=True)
+        return {'output_dir': req.output_dir}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- CLI ---
 @click.group()
