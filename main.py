@@ -30,6 +30,7 @@ import deposit as dep
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
 import hashlib
+import uuid
 
 # Configuration
 CHAIN_NAME = 'hoodi'
@@ -121,6 +122,58 @@ def create_keystore(privkey_bytes: bytes, password: str, path: str) -> None:
     }
     with open(path, 'w') as f:
         json.dump(keystore, f)
+
+
+def generate_keystore(privkey_bytes: bytes, password: str, pubkey_hex: str,
+                      derivation_path: str, path: str) -> dict:
+    """Generate a full EIP-2335 keystore and write secret file.
+
+    Returns the keystore dictionary.
+    """
+    salt = secrets.token_bytes(32)
+    dklen = 32
+    c = 1
+    derived_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, c, dklen)
+    iv = secrets.token_bytes(16)
+    ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
+    aes = AES.new(derived_key[:16], AES.MODE_CTR, counter=ctr)
+    ciphertext = aes.encrypt(privkey_bytes)
+    mac = hashlib.sha256(derived_key[16:32] + ciphertext).digest()
+    keystore = {
+        'crypto': {
+            'kdf': {
+                'function': 'pbkdf2',
+                'params': {
+                    'dklen': dklen,
+                    'c': c,
+                    'prf': 'hmac-sha256',
+                    'salt': salt.hex(),
+                },
+                'message': ''
+            },
+            'checksum': {'function': 'sha256', 'params': {}, 'message': mac.hex()},
+            'cipher': {
+                'function': 'aes-128-ctr',
+                'params': {'iv': iv.hex()},
+                'message': ciphertext.hex(),
+            }
+        },
+        'pubkey': pubkey_hex,
+        'path': derivation_path,
+        'uuid': str(uuid.uuid4()),
+        'version': 4,
+    }
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(keystore, f, indent=4)
+
+    os.makedirs('secrets', exist_ok=True)
+    secret_path = os.path.join('secrets', pubkey_hex)
+    with open(secret_path, 'w') as sf:
+        sf.write(privkey_bytes.hex())
+
+    return keystore
 
 
 def generate_deposit(pubkey_hex: Optional[str], withdrawal: str, amount: int, keystore_path: str, password: str) -> dict:
@@ -350,7 +403,7 @@ async def api_generate_keystore(req: KeystoreRequest):
         dir_path = os.path.join(req.output_dir, f"validator_{idx}")
         os.makedirs(dir_path, exist_ok=True)
         ks_path = os.path.join(dir_path, 'keystore.json')
-        create_keystore(sk_bytes, 'password', ks_path)
+        generate_keystore(sk_bytes, 'password', pk_hex, path, ks_path)
         if keystore_file is None:
             keystore_file = ks_path
             pubkey = pk_hex
