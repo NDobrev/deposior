@@ -37,6 +37,10 @@ CHAIN_ID = 560048
 RPC_URL = 'https://rpc.hoodi.ethpandaops.io'
 WALLETS_FILE = os.path.expanduser('~/.hoodi_wallets.json')
 
+# Directory for persisting deposit information
+DATA_DIR = os.path.expanduser('~/depositor_persistant')
+DB_FILE = os.path.join(DATA_DIR, 'db.json')
+
 # Initialize Web3 provider
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
@@ -73,6 +77,21 @@ def save_wallets(wallets):
     os.makedirs(os.path.dirname(WALLETS_FILE), exist_ok=True)
     with open(WALLETS_FILE, 'w') as f:
         json.dump(wallets, f, indent=2)
+
+
+# --- Keystore deposit database helpers ---
+def load_db():
+    try:
+        with open(DB_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {'used_keystores': {}}
+
+
+def save_db(db):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(DB_FILE, 'w') as f:
+        json.dump(db, f, indent=2)
 
 # --- Key generation ---
 def generate_wallet():
@@ -202,6 +221,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 async def ui_index():
     return FileResponse("static/index.html")
+
+
+@app.get('/keystores_page')
+async def ui_keystores():
+    """UI page for managing existing keystores."""
+    return FileResponse("static/keystores.html")
 
 @app.get('/wallet')
 async def api_create_wallet():
@@ -360,6 +385,58 @@ async def api_generate_keystore(req: KeystoreRequest):
     if pubkey:
         resp['pubkey'] = pubkey
     return resp
+
+
+class ListKeystoresResponse(BaseModel):
+    path: str
+    used: bool
+    tx_hash: Optional[str] = None
+
+
+@app.get('/list_keystores')
+async def api_list_keystores(path: str):
+    """Return keystore files under the given directory with usage status."""
+    result = []
+    db = load_db()
+    used = db.get('used_keystores', {})
+    for root_dir, _, files in os.walk(path):
+        for f in files:
+            if f.endswith('keystore.json') or f == 'keystore.json':
+                full = os.path.join(root_dir, f)
+                tx = used.get(full)
+                result.append({'path': full, 'used': tx is not None, 'tx_hash': tx})
+    return result
+
+
+class KeystoreDepositRequest(BaseModel):
+    address: str
+    keystore_path: str
+    password: str = 'password'
+    amount: int = 32000000000
+
+
+@app.post('/deposit_keystore')
+async def api_deposit_keystore(req: KeystoreDepositRequest):
+    """Create deposit data from keystore and send transaction."""
+    wallets = load_wallets()
+    wallet = next((w for w in wallets if Web3.to_checksum_address(w['address']) == Web3.to_checksum_address(req.address)), None)
+    if wallet is None:
+        raise HTTPException(status_code=404, detail='Wallet not found')
+
+    db = load_db()
+    used = db.get('used_keystores', {})
+    if req.keystore_path in used:
+        return {'tx_hash': used[req.keystore_path], 'already_used': True}
+
+    try:
+        deposit = generate_deposit(None, wallet['address'], req.amount, req.keystore_path, req.password)
+        tx_hash = send_deposit(wallet['privateKey'], deposit)
+        used[req.keystore_path] = tx_hash
+        db['used_keystores'] = used
+        save_db(db)
+        return {'tx_hash': tx_hash, 'deposit': deposit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- CLI ---
 @click.group()
