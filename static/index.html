@@ -3,11 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <title>Hoodi Depositor</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="css/bootstrap-cyborg.min.css">
+    <link rel="stylesheet" href="css/animate.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap">
+    <link rel="stylesheet" href="css/sci-fi.css">
     <style>
         body { margin: 40px; }
         section { margin-bottom: 2em; }
-        pre { background: #f0f0f0; padding: 1em; overflow-x: auto; }
+        pre { padding: 1em; overflow-x: auto; }
     </style>
 </head>
 <body>
@@ -19,7 +22,7 @@
         <tbody></tbody>
     </table>
     <select id="wallet-select" class="form-select d-none"></select>
-    <button class="btn btn-secondary" onclick="refreshWallets()">Refresh Wallets</button>
+    <button class="btn btn-secondary btn-neon" onclick="refreshWallets()">Refresh Wallets</button>
 </section>
 
 <section>
@@ -29,7 +32,7 @@
     <label class="form-label">Mnemonic (optional) <input class="form-control" id="ks-mnemonic" type="text"></label>
     <label class="form-label">Chain <input class="form-control" id="ks-chain" type="text" value="hoodi"></label>
     <label class="form-label">Output Directory <input class="form-control" id="ks-dir" type="text" value="validator_keys"></label>
-    <button class="btn btn-primary" onclick="generateKeystore()">Generate</button>
+    <button class="btn btn-primary btn-neon" onclick="generateKeystore()">Generate</button>
     <pre id="ks-output"></pre>
 </section>
 
@@ -40,13 +43,13 @@
     <label class="form-label">Amount (gwei) <input class="form-control" id="amount" type="number" value="32000000000"></label>
     <label class="form-label">Keystore File <input class="form-control" id="keystore" type="file"></label>
     <label class="form-label">Password <input class="form-control" id="password" type="password"></label>
-    <button class="btn btn-primary" onclick="generateDeposit()">Generate</button>
+    <button class="btn btn-primary btn-neon" onclick="generateDeposit()">Generate</button>
     <pre id="deposit-output"></pre>
 </section>
 
 <section>
     <h2>Send Deposit</h2>
-    <button class="btn btn-success" onclick="sendDeposit()">Send Deposit Transaction</button>
+    <button class="btn btn-success btn-neon" onclick="sendDeposit()">Send Deposit Transaction</button>
     <pre id="tx-output"></pre>
 </section>
 
@@ -70,7 +73,7 @@ async function refreshWallets() {
         sel.appendChild(opt);
 
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${w.address}</td><td>${w.balance}</td><td><button class="btn btn-sm btn-outline-primary" onclick="selectWallet('${w.address}')">Use</button> <button class="btn btn-sm btn-success ms-1" onclick="autoDeposit('${w.address}')">Deposit</button></td>`;
+        tr.innerHTML = `<td>${w.address}</td><td>${w.balance}</td><td><button class="btn btn-sm btn-outline-primary btn-neon" onclick="selectWallet('${w.address}')">Use</button> <button class="btn btn-sm btn-success ms-1 btn-neon" onclick="autoDeposit('${w.address}')">Deposit</button></td>`;
         tbody.appendChild(tr);
     });
 }
