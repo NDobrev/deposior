@@ -452,7 +452,12 @@ class ListKeystoresResponse(BaseModel):
 
 @app.get('/list_keystores')
 async def api_list_keystores(path: str):
-    """Return keystore files under the given directory with usage status."""
+    """Return keystore files under the given directory with usage status.
+
+    The returned objects include ``pubkey`` and ``version`` fields parsed from
+    each keystore file so the UI can display them directly.
+    """
+
     result = []
     db = load_db()
     used = db.get('used_keystores', {})
@@ -461,7 +466,25 @@ async def api_list_keystores(path: str):
             if f.endswith('keystore.json') or f == 'keystore.json':
                 full = os.path.join(root_dir, f)
                 tx = used.get(full)
-                result.append({'path': full, 'used': tx is not None, 'tx_hash': tx})
+
+                pubkey = None
+                version = None
+                try:
+                    with open(full, 'r') as kf:
+                        data = json.load(kf)
+                        pubkey = data.get('pubkey')
+                        version = data.get('version')
+                except Exception:
+                    pass
+
+                result.append({
+                    'path': full,
+                    'used': tx is not None,
+                    'tx_hash': tx,
+                    'pubkey': pubkey,
+                    'version': version,
+                })
+
     return result
 
 
