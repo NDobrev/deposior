@@ -55,6 +55,7 @@ function log(msg) {
     const pre = document.getElementById('tx-output');
     pre.textContent += msg + "\n";
 }
+window.lastKeystoreInfo = null;
 async function refreshWallets() {
     const res = await fetch('/wallets');
     const wallets = await res.json();
@@ -86,13 +87,20 @@ async function generateDeposit() {
     const amount = document.getElementById('amount').value;
     const fileInput = document.getElementById('keystore');
     const password = document.getElementById('password').value;
-    if (!fileInput.files.length) { alert('Select keystore file'); return; }
+
     const form = new FormData();
-    form.append('pubkey', pubkey);
     form.append('withdrawal', withdrawal);
     form.append('amount', amount);
     form.append('password', password);
-    form.append('keystore', fileInput.files[0]);
+
+    if (pubkey) form.append('pubkey', pubkey);
+    if (window.lastKeystoreInfo && window.lastKeystoreInfo.keystore) {
+        form.append('keystore_path', window.lastKeystoreInfo.keystore);
+    } else {
+        if (!fileInput.files.length) { alert('Select keystore file'); return; }
+        form.append('keystore', fileInput.files[0]);
+    }
+
     const res = await fetch('/generate_deposit', { method: 'POST', body: form });
     const data = await res.json();
     document.getElementById('deposit-output').textContent = JSON.stringify(data, null, 2);
@@ -151,6 +159,10 @@ async function generateKeystore() {
     });
     const data = await res.json();
     document.getElementById('ks-output').textContent = JSON.stringify(data, null, 2);
+    window.lastKeystoreInfo = data;
+    if (data.pubkey) {
+        document.getElementById('pubkey').value = data.pubkey;
+    }
     log('Keystore generation finished');
 }
 
