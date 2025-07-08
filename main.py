@@ -31,6 +31,7 @@ from Crypto.Cipher import AES
 from Crypto.Util import Counter
 import hashlib
 import uuid
+import logging
 
 # Configuration
 CHAIN_NAME = 'hoodi'
@@ -44,6 +45,9 @@ DB_FILE = os.path.join(DATA_DIR, 'db.json')
 
 # Initialize Web3 provider
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+
+logger = logging.getLogger(__name__)
 
 # Ensure eth-account HD features
 Account.enable_unaudited_hdwallet_features()
@@ -464,34 +468,53 @@ async def api_list_keystores(path: str):
 class KeystoreDepositRequest(BaseModel):
     address: str
     keystore_path: str
+    secret_path: str
     amount: int = 32000000000
-
 
 @app.post('/deposit_keystore')
 async def api_deposit_keystore(req: KeystoreDepositRequest):
     """Create deposit data from keystore and send transaction."""
+    logger.info(f"Received deposit request for address: {req.address}")
+
     wallets = load_wallets()
     wallet = next((w for w in wallets if Web3.to_checksum_address(w['address']) == Web3.to_checksum_address(req.address)), None)
     if wallet is None:
+        logger.warning(f"Wallet not found for address: {req.address}")
         raise HTTPException(status_code=404, detail='Wallet not found')
 
     db = load_db()
     used = db.get('used_keystores', {})
     if req.keystore_path in used:
+        logger.info(f"Keystore already used: {req.keystore_path}, tx_hash: {used[req.keystore_path]}")
         return {'tx_hash': used[req.keystore_path], 'already_used': True}
-
+    logger.error(req)
     try:
-        pwd_path = os.path.join(os.path.dirname(req.keystore_path), 'secrets', req.address)
+        logger.error(f"12314")
+        pwd_path = req.secret_path
+        logger.error(f"{pwd_path}")
+        logger.debug(f"Loading password from: {pwd_path}")
         with open(pwd_path, 'r') as pf:
             password = pf.read().strip()
+
+        logger.info(f"Generating deposit for address: {wallet['address']} from keystore: {req.keystore_path}")
         deposit = generate_deposit(None, wallet['address'], req.amount, req.keystore_path, password)
+
+        logger.info(f"Sending deposit transaction for address: {wallet['address']}")
         tx_hash = send_deposit(wallet['privateKey'], deposit)
+
+        logger.info(f"Deposit transaction sent. tx_hash: {tx_hash}")
         used[req.keystore_path] = tx_hash
         db['used_keystores'] = used
         save_db(db)
+
         return {'tx_hash': tx_hash, 'deposit': deposit}
+
+    except FileNotFoundError as fnf:
+        logger.error(f"Password file not found at: {pwd_path}")
+        raise HTTPException(status_code=400, detail=f"Password file not found: {pwd_path}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Unexpected error during deposit for address {req.address}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # --- CLI ---
 @click.group()
