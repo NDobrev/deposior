@@ -4,6 +4,7 @@ import os
 import time
 from web3 import Web3
 from eth_account import Account
+from web3.exceptions import TransactionNotFound
 
 # Deposit contract address and minimal ABI
 DEPOSIT_CONTRACT_ADDRESS = Web3.to_checksum_address("0x00000000219ab540356cBB839Cbe05303d7705Fa")
@@ -59,8 +60,12 @@ def wait_for_confirmation(w3, tx_hash, timeout=300, poll_interval=10):
     print(f"Waiting for transaction {tx_hash.hex()} confirmation...")
     start = time.time()
     while time.time() - start < timeout:
-        receipt = w3.eth.get_transaction_receipt(tx_hash)
-        if receipt:
+        try:
+            receipt = w3.eth.get_transaction_receipt(tx_hash)
+        except TransactionNotFound:
+            receipt = None
+        print(receipt) 
+        if receipt is not None:
             if receipt.status == 1:
                 print(f"Transaction confirmed in block {receipt.blockNumber}")
                 return receipt

@@ -5,6 +5,44 @@ from Crypto.Cipher import AES
 from Crypto.Util import Counter
 from py_ecc.bls import G2ProofOfPossession as bls
 
+DOMAIN_DEPOSIT = bytes.fromhex("03000000")
+GENESIS_FORK_VERSION = bytes(4)
+
+def compute_deposit_domain() -> bytes:
+    """Return the deposit domain as used in the deposit contract"""
+    return DOMAIN_DEPOSIT + GENESIS_FORK_VERSION + bytes(24)
+
+
+def merkleize(chunks):
+    """Merkleize a list of 32-byte chunks as defined in the spec."""
+    import math
+    if not chunks:
+        return sha256(bytes(32))
+    count = len(chunks)
+    size = 1 << math.ceil(math.log2(count))
+    chunks = list(chunks) + [bytes(32)] * (size - count)
+    while len(chunks) > 1:
+        chunks = [sha256(chunks[i] + chunks[i + 1]) for i in range(0, len(chunks), 2)]
+    return chunks[0]
+
+
+def compute_deposit_message_root(pubkey: bytes, withdrawal_credentials: bytes, amount: int) -> bytes:
+    amount_le = int_to_bytes_le(amount, 8)
+    packed = pubkey + withdrawal_credentials + amount_le + bytes(24)
+    chunks = [packed[i:i + 32] for i in range(0, len(packed), 32)]
+    return merkleize(chunks)
+
+
+def compute_deposit_data_root(pubkey: bytes, withdrawal_credentials: bytes, amount: int, signature: bytes) -> bytes:
+    amount_le = int_to_bytes_le(amount, 8)
+    pubkey_root = sha256(pubkey + bytes(16))
+    left = sha256(pubkey_root + withdrawal_credentials)
+    sig_root = sha256(
+        sha256(signature[:64]) +
+        sha256(signature[64:] + bytes(32))
+    )
+    right = sha256(amount_le + bytes(24) + sig_root)
+    return sha256(left + right)
 
 def sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
@@ -96,13 +134,11 @@ def main():
     except ValueError:
         sys.exit("Amount must be a positive integer in gwei, typically 32000000000 (32 ETH)")
 
-    amount_bytes = int_to_bytes_le(amount, 8)
-    deposit_message = pubkey + withdrawal_credentials + amount_bytes
-    deposit_message_root = sha256(deposit_message)
+    deposit_message_root = compute_deposit_message_root(pubkey, withdrawal_credentials, amount)
+    signing_root = sha256(deposit_message_root + compute_deposit_domain())
 
-    signature = bls.Sign(privkey, deposit_message_root)
-    deposit_data = deposit_message + signature
-    deposit_data_root = sha256(deposit_data)
+    signature = bls.Sign(privkey, signing_root)
+    deposit_data_root = compute_deposit_data_root(pubkey, withdrawal_credentials, amount, signature)
 
     deposit_json = {
         "pubkey": f"0x{pubkey.hex()}",
